@@ -14,7 +14,7 @@ The system accepts structured data from users through multiple sources:
 
 - CSV
 - Excel
-- Databases
+- Database
 
 The user provides the dataset that needs to be analyzed.
 

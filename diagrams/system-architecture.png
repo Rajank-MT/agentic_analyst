@@ -1,0 +1,84 @@
+                         ┌──────────────────────┐
+                         │        USER          │
+                         │ CSV / Excel / DB     │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │   DATA INGESTION     │
+                         │       LAYER          │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                    ┌──────────────────────────────┐
+                    │       DATA PROFILING         │
+                    │                              │
+                    │ Schema / Types / Missing     │
+                    │ Duplicates / Statistics      │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │   DATA UNDERSTANDING AGENT   │
+                    │                              │
+                    │ Semantic meaning             │
+                    │ Keys / Relationships         │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │ RELATIONSHIP DISCOVERY AGENT │
+                    │                              │
+                    │ Table ↔ Table               │
+                    │ Dataset ↔ Dataset           │
+                    │ Column ↔ Column              │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │    ANALYSIS PLANNER AGENT    │
+                    │                              │
+                    │ "What should I investigate?" │
+                    └──────────────┬───────────────┘
+                                   │
+                 ┌─────────────────┼─────────────────┐
+                 ▼                 ▼                 ▼
+          ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+          │ Trend Agent │   │ Correlation │   │ Anomaly     │
+          │             │   │ Agent       │   │ Agent       │
+          └──────┬──────┘   └──────┬──────┘   └──────┬──────┘
+                 │                 │                 │
+                 └─────────────────┼─────────────────┘
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │   HYPOTHESIS AGENT           │
+                    │                              │
+                    │ Generate & test hypotheses   │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │      VALIDATION AGENT        │
+                    │                              │
+                    │ Statistical validation       │
+                    │ Data quality validation      │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │     INSIGHT RANKING AGENT    │
+                    │                              │
+                    │ Confidence / Impact / Novelty│
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │    REPORT GENERATION AGENT   │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │        FINAL OUTPUT          │
+                    │                              │
+                    │ Insights + Charts + Evidence│
+                    └──────────────────────────────┘

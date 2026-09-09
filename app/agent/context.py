@@ -5,6 +5,8 @@ from app.data.model import (
     AgentState,
 )
 
+from app.agent.investigation import build_investigation_summary
+
 
 def build_agent_context(
     state: AgentState,
@@ -25,42 +27,78 @@ def build_agent_context(
     """
 
     return {
-        "user_goal": state.user_goal,
-        "datasets": state.dataset_names,
-        "metrics": [
-            {
-                "column_name": profile.column_name,
-                "role": profile.role.value,
-                "confidence": profile.confidence,
-                "signals": profile.signals,
-            }
-            for profile in state.metric_profiles
-        ],
-        "available_tools": [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "analysis_type": tool.analysis_type.value,
-                "required_roles": [
-                    role.value
-                    for role in tool.required_roles
-                ],
-            }
-            for tool in state.available_tools
-        ],
-        "previous_observations": [
-            {
-                "tool_name": observation.tool_name,
-                "target_columns": observation.target_columns,
-                "success": observation.success,
-                "result": _serialize_result(
-                    observation.result
-                ),
-                "error": observation.error,
-            }
-            for observation in observations
-        ],
-    }
+    "user_goal": state.user_goal,
+    "datasets": state.dataset_names,
+
+    "metrics": [
+        {
+            "column_name": profile.column_name,
+            "role": profile.role.value,
+            "confidence": profile.confidence,
+            "signals": profile.signals,
+        }
+        for profile in state.metric_profiles
+    ],
+
+    "available_tools": [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "analysis_type": tool.analysis_type.value,
+            "required_roles": [
+                role.value
+                for role in tool.required_roles
+            ],
+        }
+        for tool in state.available_tools
+    ],
+
+    "investigation_summary": build_investigation_summary(
+    observations
+    ),
+
+
+    "investigation_history": [
+        {
+            "execution_index": index,
+            "tool_name": observation.tool_name,
+            "target_columns": observation.target_columns,
+            "success": observation.success,
+            "status": "success" if observation.success else "failed",
+        }
+        for index, observation in enumerate(observations)
+    ],
+
+    "observation_results": [
+        {
+            "execution_index": index,
+            "tool_name": observation.tool_name,
+            "target_columns": observation.target_columns,
+            "success": observation.success,
+            "status": "success" if observation.success else "failed",
+            "result": _serialize_result(
+                observation.result
+            ),
+            "error": observation.error,
+        }
+        for index, observation in enumerate(observations)
+    ],
+
+    # Backward compatibility with existing pipeline tests
+    "previous_observations": [
+        {
+            "tool_name": observation.tool_name,
+            "target_columns": observation.target_columns,
+            "success": observation.success,
+            "status": "success" if observation.success else "failed",
+            "result": _serialize_result(
+                observation.result
+            ),
+            "error": observation.error,
+        }
+        for observation in observations
+    ],
+}
 
 
 def _serialize_result(result: Any) -> Any:
@@ -94,3 +132,47 @@ def _serialize_result(result: Any) -> Any:
         ]
 
     return result
+
+def _build_investigation_history(observations):
+    history = []
+
+    for index, observation in enumerate(observations):
+        history.append(
+            {
+                "execution_index": index,
+                "tool_name": observation.tool_name,
+                "target_columns": observation.target_columns,
+                "success": observation.success,
+            }
+        )
+
+    return history
+
+
+def _build_observation_results(observations):
+    results = []
+
+    for index, observation in enumerate(observations):
+        if not observation.success:
+            results.append(
+                {
+                    "execution_index": index,
+                    "tool_name": observation.tool_name,
+                    "target_columns": observation.target_columns,
+                    "status": "failed",
+                    "error": observation.error,
+                }
+            )
+            continue
+
+        results.append(
+            {
+                "execution_index": index,
+                "tool_name": observation.tool_name,
+                "target_columns": observation.target_columns,
+                "status": "success",
+                "result": _serialize_result(observation.result),
+            }
+        )
+
+    return results

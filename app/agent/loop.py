@@ -11,10 +11,12 @@ from app.data.model import (
     ToolExecution,
     ToolRequest,
 )
+
 from app.data.tool_executor import execute_tool
 from app.data.tool_validator import validate_tool_request
 
 from app.agent.insight_generator import InsightGenerator
+from app.agent.session import AgentSession
 
 
 class AgentLoop:
@@ -49,7 +51,8 @@ class AgentLoop:
         llm,
         registry,
         max_steps=10,
-        insight_generator= None,
+        insight_generator=None,
+        session=None,
     ):
         if max_steps <= 0:
             raise ValueError("max_steps must be greater than zero.")
@@ -58,6 +61,7 @@ class AgentLoop:
         self.registry = registry
         self.max_steps = max_steps
         self.insight_generator = insight_generator
+        self.session = session
 
     def _is_duplicate_tool_call(
         self,
@@ -106,6 +110,11 @@ class AgentLoop:
 
         observations.append(observation)
 
+        if self.session is not None:
+            self.session.observations.append(
+                observation
+            )
+
         execution = ToolExecution(
             tool_name=tool_name,
             target_columns=target_columns,
@@ -117,6 +126,40 @@ class AgentLoop:
             state,
             execution,
         )
+
+    def _generate_insights(
+        self,
+        state: AgentState,
+        observations: list[AgentObservation],
+    ) -> bool:
+        """
+        Generate business insights from the observations collected so far.
+        """
+
+        if self.insight_generator is None:
+            return True
+
+        try:
+            report = self.insight_generator.generate(
+                state=state,
+                observations=observations,
+            )
+
+            state.insights = report.insights
+
+            return True
+
+        except Exception as exc:
+            state.executions.append(
+                ToolExecution(
+                    tool_name="insight_generation",
+                    target_columns=[],
+                    success=False,
+                    error=str(exc),
+                )
+            )
+
+            return False
 
     def run(
         self,
@@ -143,14 +186,21 @@ class AgentLoop:
             # 1. Ask LLM for next action
             # ---------------------------------------------------------
 
-            # 1. Ask LLM for next action
             try:
                 action = self.llm.decide(
                     state=state,
                     observations=observations,
                 )
+
             except Exception as exc:
                 error_message = f"LLM decision failed: {exc}"
+
+                observation = AgentObservation(
+                    tool_name="llm_decision",
+                    target_columns=[],
+                    success=False,
+                    error=error_message,
+                )
 
                 execution = ToolExecution(
                     tool_name="llm_decision",
@@ -159,7 +209,19 @@ class AgentLoop:
                     error=error_message,
                 )
 
-                add_tool_execution(state, execution)
+                observations.append(
+                    observation
+                )
+
+                if self.session is not None:
+                    self.session.observations.append(
+                        observation
+                    )
+
+                add_tool_execution(
+                    state,
+                    execution,
+                )
 
                 update_agent_status(
                     state,
@@ -169,34 +231,36 @@ class AgentLoop:
                 return state
 
             # ---------------------------------------------------------
+            # Store hypothesis returned by the reasoning engine
+            # ---------------------------------------------------------
+
+            if action.hypothesis is not None:
+                state.hypotheses.append(
+                    action.hypothesis
+                )
+
+            # ---------------------------------------------------------
             # 2. Finish
             # ---------------------------------------------------------
 
             if action.action_type == AgentActionType.FINISH:
 
-                if self.insight_generator is not None:
-                    try:
-                        report = self.insight_generator.generate(
-                            state=state,
-                            observations=observations,
-                        )
+                if not self._generate_insights(
+                    state=state,
+                    observations=observations,
+                ):
+                    update_agent_status(
+                        state,
+                        AgentStatus.FAILED,
+                    )
 
-                        state.insights = report.insights
+                    return state
 
-                    except Exception as exc:
-                        state.status = AgentStatus.FAILED
+                update_agent_status(
+                    state,
+                    AgentStatus.COMPLETED,
+                )
 
-                        state.executions.append(
-                            ToolExecution(
-                                tool_name="insight_generation",
-                                success=False,
-                                error=str(exc),
-                            )
-                        )
-
-                        return state
-
-                state.status = AgentStatus.COMPLETED
                 return state
 
             # ---------------------------------------------------------
@@ -239,6 +303,7 @@ class AgentLoop:
                 target_columns=target_columns,
                 observations=observations,
             ):
+
                 self._record_failed_execution(
                     state=state,
                     observations=observations,
@@ -365,6 +430,11 @@ class AgentLoop:
                 observation
             )
 
+            if self.session is not None:
+                self.session.observations.append(
+                    observation
+                )
+
             # ---------------------------------------------------------
             # 12. Store execution in Agent State
             # ---------------------------------------------------------
@@ -386,11 +456,10 @@ class AgentLoop:
         # -------------------------------------------------------------
         # 14. Maximum steps reached
         # -------------------------------------------------------------
-        
+
         update_agent_status(
             state,
             AgentStatus.MAX_STEPS_REACHED,
-            
         )
 
         execution = ToolExecution(
@@ -407,5 +476,20 @@ class AgentLoop:
             state,
             execution,
         )
+
+        # -------------------------------------------------------------
+        # 15. Generate partial insights
+        # -------------------------------------------------------------
+
+        if not self._generate_insights(
+            state=state,
+            observations=observations,
+        ):
+            update_agent_status(
+                state,
+                AgentStatus.FAILED,
+            )
+
+            return state
 
         return state

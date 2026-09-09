@@ -491,6 +491,21 @@ class ToolExecution(BaseModel):
     result: Any | None = None
     error: str | None = None
 
+class HypothesisStatus(str, Enum):
+    ACTIVE = "active"
+    SUPPORTED = "supported"
+    WEAKENED = "weakened"
+    REJECTED = "rejected"
+
+
+class InvestigationHypothesis(BaseModel):
+    hypothesis: str
+    supporting_execution_indexes: list[int] = Field(
+        default_factory=list
+    )
+    status: HypothesisStatus = HypothesisStatus.ACTIVE
+    conclusion: str | None = None
+
 
 class AgentState(BaseModel):
     user_goal: str
@@ -500,6 +515,9 @@ class AgentState(BaseModel):
     analysis_plan: AnalysisPlan | None = None
     executions: list[ToolExecution] = Field(default_factory=list)
     insight_signals: list[InsightSignal] = Field(default_factory=list)
+    hypotheses: list[InvestigationHypothesis] = Field(
+        default_factory=list
+    )
     insights: list[BusinessInsight] = Field(default_factory=list)
     status: AgentStatus = AgentStatus.INITIALIZED
 
@@ -523,6 +541,7 @@ class AgentObservation(BaseModel):
     error: str | None = None
 
 
+
 class AgentActionType(str, Enum):
     RUN_TOOL = "run_tool"
     FINISH = "finish"
@@ -532,3 +551,4 @@ class AgentAction(BaseModel):
     action_type: AgentActionType
     tool_call: AgentToolCall | None = None
     reason: str
+    hypothesis: InvestigationHypothesis | None = None

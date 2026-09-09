@@ -17,7 +17,9 @@ from app.data.model import (
 )
 from app.data.profiling import profile_dataset
 from app.data.tool_registry import build_analysis_tool_registry
+from app.agent.session import AgentSession
 
+from app.data.model import InvestigationHypothesis
 
 class SequentialMockLLM(AgentLLM):
 
@@ -210,3 +212,309 @@ def test_agent_loop_fails_when_max_steps_reached():
     assert final_state.executions[-1].success is False
 
     assert "Maximum reasoning steps" in final_state.executions[-1].error
+
+
+def test_agent_loop_generates_partial_insights_when_max_steps_reached():
+    dataframe = pd.DataFrame(
+        {
+            "revenue": [1000, 1500, 700, 2200, 1800],
+        }
+    )
+
+    dataset_profile = profile_dataset(
+        dataframe=dataframe,
+        dataset_name="customers",
+    )
+
+    metric_profiles = [
+        discover_metric_role(column)
+        for column in dataset_profile.columns
+    ]
+
+    registry = build_analysis_tool_registry()
+
+    state = create_agent_state(
+        user_goal="Find important business insights.",
+        dataset_names=["customers"],
+        metric_profiles=metric_profiles,
+        available_tools=registry.tools,
+    )
+
+    run_statistics_action = AgentAction(
+        action_type=AgentActionType.RUN_TOOL,
+        tool_call={
+            "tool_name": "numeric_statistics",
+            "target_columns": ["revenue"],
+            "reasoning": "Calculate the revenue baseline.",
+        },
+        reason="Analyze revenue.",
+    )
+
+    llm = SequentialMockLLM(
+        actions=[run_statistics_action]
+    )
+
+    fake_generator = FakeInsightGenerator()
+
+    loop = AgentLoop(
+        llm=llm,
+        registry=registry,
+        max_steps=1,
+        insight_generator=fake_generator,
+    )
+
+    final_state = loop.run(
+        state=state,
+        dataframe=dataframe,
+    )
+
+    assert fake_generator.called is True
+    assert len(fake_generator.received_observations) == 1
+
+    assert final_state.status.value == "max_steps_reached"
+
+    assert len(final_state.insights) == 1
+    assert final_state.insights[0].title == "Revenue statistics generated"
+
+    assert len(final_state.executions) == 2
+    assert final_state.executions[-1].tool_name == "agent_loop"
+    assert final_state.executions[-1].success is False
+
+
+
+def test_agent_loop_supports_iterative_investigation():
+    dataframe = pd.DataFrame(
+        {
+            "revenue": [1000, 1500, 700, 2200, 1800],
+            "cost": [600, 900, 500, 1200, 1000],
+        }
+    )
+
+    dataset_profile = profile_dataset(
+        dataframe=dataframe,
+        dataset_name="customers",
+    )
+
+    metric_profiles = [
+        discover_metric_role(column)
+        for column in dataset_profile.columns
+    ]
+
+    registry = build_analysis_tool_registry()
+
+    state = create_agent_state(
+        user_goal="Find important business insights.",
+        dataset_names=["customers"],
+        metric_profiles=metric_profiles,
+        available_tools=registry.tools,
+    )
+
+    revenue_statistics = AgentAction(
+        action_type=AgentActionType.RUN_TOOL,
+        tool_call={
+            "tool_name": "numeric_statistics",
+            "target_columns": ["revenue"],
+            "reasoning": "Establish a baseline for revenue.",
+        },
+        reason="Understand revenue first.",
+    )
+
+    revenue_cost_correlation = AgentAction(
+        action_type=AgentActionType.RUN_TOOL,
+        tool_call={
+            "tool_name": "correlation",
+            "target_columns": ["revenue", "cost"],
+            "reasoning": (
+                "Investigate the relationship between revenue and cost "
+                "after establishing the revenue baseline."
+            ),
+        },
+        reason="Investigate a potentially important relationship.",
+    )
+
+    finish = AgentAction(
+        action_type=AgentActionType.FINISH,
+        reason="Sufficient evidence has been collected.",
+    )
+
+    llm = SequentialMockLLM(
+        actions=[
+            revenue_statistics,
+            revenue_cost_correlation,
+            finish,
+        ]
+    )
+
+    loop = AgentLoop(
+        llm=llm,
+        registry=registry,
+        max_steps=5,
+        insight_generator=FakeInsightGenerator(),
+    )
+
+    final_state = loop.run(
+        state=state,
+        dataframe=dataframe,
+    )
+
+    assert final_state.status.value == "completed"
+
+    assert len(final_state.executions) == 2
+
+    assert final_state.executions[0].tool_name == "numeric_statistics"
+    assert final_state.executions[1].tool_name == "correlation"
+
+    assert (
+        final_state.executions[1].target_columns
+        == ["revenue", "cost"]
+    )
+
+def test_agent_loop_stores_observations_in_session():
+    dataframe = pd.DataFrame({
+        "revenue": [1000, 1500, 700, 2200, 1800],
+    })
+
+    dataset_profile = profile_dataset(
+        dataframe,
+        dataset_name="sales",
+    )
+
+    metric_profiles = [
+        discover_metric_role(column)
+        for column in dataset_profile.columns
+    ]
+
+    registry = build_analysis_tool_registry()
+
+    state = create_agent_state(
+        user_goal="Analyze the sales dataset.",
+        dataset_names=["sales"],
+        metric_profiles=metric_profiles,
+        available_tools=registry.tools,
+    )
+
+    session = AgentSession(
+        session_id="test-session",
+        state=state,
+        dataframe=dataframe,
+    )
+
+    action = AgentAction(
+        action_type=AgentActionType.RUN_TOOL,
+        tool_call={
+            "tool_name": "numeric_statistics",
+            "target_columns": ["revenue"],
+            "reasoning": "Establish a revenue baseline.",
+        },
+        reason="Understand revenue.",
+    )
+
+    finish = AgentAction(
+        action_type=AgentActionType.FINISH,
+        reason="Sufficient evidence collected.",
+    )
+
+    llm = SequentialMockLLM(
+        actions=[action, finish]
+    )
+
+    loop = AgentLoop(
+        llm=llm,
+        registry=registry,
+        max_steps=5,
+        insight_generator=FakeInsightGenerator(),
+        session=session,
+    )
+
+    final_state = loop.run(
+        state=state,
+        dataframe=dataframe,
+    )
+
+    assert final_state.status == AgentStatus.COMPLETED
+
+    assert len(session.observations) == 1
+
+    assert (
+        session.observations[0].tool_name
+        == "numeric_statistics"
+    )
+
+    assert (
+        session.observations[0].target_columns
+        == ["revenue"]
+    )
+
+def test_agent_loop_stores_hypothesis_in_session():
+    dataframe = pd.DataFrame({
+        "revenue": [1000, 1500, 700, 2200, 1800],
+    })
+
+    dataset_profile = profile_dataset(
+        dataframe,
+        dataset_name="sales",
+    )
+
+    metric_profiles = [
+        discover_metric_role(column)
+        for column in dataset_profile.columns
+    ]
+
+    registry = build_analysis_tool_registry()
+
+    state = create_agent_state(
+        user_goal="Analyze the sales dataset.",
+        dataset_names=["sales"],
+        metric_profiles=metric_profiles,
+        available_tools=registry.tools,
+    )
+
+    session = AgentSession(
+        session_id="test-session",
+        state=state,
+        dataframe=dataframe,
+    )
+
+    hypothesis = InvestigationHypothesis(
+        hypothesis="Revenue may contain significant variation."
+    )
+
+    action = AgentAction(
+        action_type=AgentActionType.RUN_TOOL,
+        tool_call={
+            "tool_name": "numeric_statistics",
+            "target_columns": ["revenue"],
+            "reasoning": "Investigate revenue variation.",
+        },
+        reason="Test the revenue variation hypothesis.",
+        hypothesis=hypothesis,
+    )
+
+    finish = AgentAction(
+        action_type=AgentActionType.FINISH,
+        reason="Investigation complete.",
+    )
+
+    llm = SequentialMockLLM(
+        actions=[action, finish]
+    )
+
+    loop = AgentLoop(
+        llm=llm,
+        registry=registry,
+        max_steps=5,
+        insight_generator=FakeInsightGenerator(),
+        session=session,
+    )
+
+    loop.run(
+        state=state,
+        dataframe=dataframe,
+    )
+
+    assert len(session.state.hypotheses) == 1
+
+    assert (
+        session.state.hypotheses[0].hypothesis
+        == "Revenue may contain significant variation."
+    )

@@ -85,6 +85,7 @@ def test_gemini_agent_loop_end_to_end():
 
     assert final_state.status in {
         AgentStatus.COMPLETED,
+        AgentStatus.MAX_STEPS_REACHED,
         AgentStatus.FAILED,
     }
 

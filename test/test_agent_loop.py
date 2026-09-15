@@ -20,6 +20,13 @@ from app.data.tool_registry import build_analysis_tool_registry
 from app.agent.session import AgentSession
 
 from app.data.model import InvestigationHypothesis
+from app.agent.loop import AgentLoop
+from app.data.model import (
+    AgentAction,
+    AgentActionType,
+    AgentComposedAnalysis,
+    AgentState,
+)
 
 class SequentialMockLLM(AgentLLM):
 
@@ -518,3 +525,127 @@ def test_agent_loop_stores_hypothesis_in_session():
         session.state.hypotheses[0].hypothesis
         == "Revenue may contain significant variation."
     )
+
+def test_composed_analysis_action():
+
+    action = AgentAction(
+        action_type=AgentActionType.RUN_COMPOSED_ANALYSIS,
+        composed_analysis=AgentComposedAnalysis(
+            analysis_request={
+                "analysis_name": "category_unit_economics",
+                "purpose": "Compare category economics",
+                "group_by": ["Category"],
+                "metrics": [
+                    {
+                        "column": "Revenue",
+                        "aggregation": "sum",
+                    },
+                    {
+                        "column": "Units",
+                        "aggregation": "sum",
+                    },
+                ],
+            },
+            reasoning="Existing tools do not directly answer this question.",
+        ),
+        reason="Investigate category unit economics.",
+    )
+
+    assert action.action_type == AgentActionType.RUN_COMPOSED_ANALYSIS
+    assert action.composed_analysis is not None
+    assert (
+        action.composed_analysis.analysis_request["group_by"]
+        == ["Category"]
+    )
+
+def test_composed_analysis_execution():
+
+    dataframe = pd.DataFrame(
+        {
+            "Category": ["A", "A", "B", "B"],
+            "Revenue": [100, 200, 300, 400],
+            "Units": [10, 20, 30, 40],
+        }
+    )
+
+    class FakeLLM:
+
+        def __init__(self):
+            self.calls = 0
+
+        def decide(self, state, observations):
+
+            self.calls += 1
+
+            if self.calls == 1:
+                return AgentAction(
+                    action_type=AgentActionType.RUN_COMPOSED_ANALYSIS,
+                    reason="Existing tools do not directly answer this.",
+                    composed_analysis=AgentComposedAnalysis(
+                        reasoning="Compare revenue per unit by category.",
+                        analysis_request={
+                            "analysis_name": "category_unit_economics",
+                            "purpose": "Compare revenue per unit by category",
+                            "group_by": ["Category"],
+                            "metrics": [
+                                {
+                                    "column": "Revenue",
+                                    "aggregation": "sum",
+                                },
+                                {
+                                    "column": "Units",
+                                    "aggregation": "sum",
+                                },
+                            ],
+                            "derived_metrics": [
+                                {
+                                    "name": "Revenue_per_Unit",
+                                    "operation": "ratio",
+                                    "numerator": "Revenue",
+                                    "denominator": "Units",
+                                }
+                            ],
+                        },
+                    ),
+                )
+
+            return AgentAction(
+                action_type=AgentActionType.FINISH,
+                reason="Enough evidence.",
+            )
+
+    state = AgentState(
+        user_goal="Analyze the dataset.",
+    )
+
+    loop = AgentLoop(
+        llm=FakeLLM(),
+        registry=None,
+        max_steps=2,
+    )
+
+    final_state = loop.run(
+        state=state,
+        dataframe=dataframe,
+    )
+
+    composed_executions = [
+        execution
+        for execution in final_state.executions
+        if execution.tool_name == "composed_analysis"
+    ]
+
+    assert len(composed_executions) == 1
+    assert composed_executions[0].success is True
+
+    result = composed_executions[0].result
+
+    assert result["Category"].tolist() == ["A", "B"]
+
+    assert result["Revenue"].tolist() == [300, 700]
+
+    assert result["Units"].tolist() == [30, 70]
+
+    assert result["Revenue_per_Unit"].tolist() == [10.0, 10.0]
+
+    assert final_state.status.value == "completed"

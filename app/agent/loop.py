@@ -3,6 +3,9 @@ from typing import Any
 import pandas as pd
 
 from app.agent.state import add_tool_execution, update_agent_status
+from app.data.analysis_executor import AnalysisExecutor
+from app.data.analysis_request import AnalysisRequest
+from app.data.analysis_validator import AnalysisRequestValidator
 from app.data.model import (
     AgentActionType,
     AgentObservation,
@@ -11,39 +14,20 @@ from app.data.model import (
     ToolExecution,
     ToolRequest,
 )
-
 from app.data.tool_executor import execute_tool
 from app.data.tool_validator import validate_tool_request
-
-from app.agent.insight_generator import InsightGenerator
-from app.agent.session import AgentSession
 
 
 class AgentLoop:
     """
     Autonomous execution loop for the Agentic Data Analyst.
 
-    Flow:
+    The LLM can:
+        1. Run an existing analytical tool.
+        2. Run a composed analysis.
+        3. Finish the investigation.
 
-        Agent State
-             ↓
-            LLM
-             ↓
-        Agent Action
-             ↓
-          Validate
-             ↓
-        Execute Tool
-             ↓
-         Observation
-             ↓
-            LLM
-             ↓
-        Next Action
-             ↓
-            ...
-             ↓
-           Finish
+    Existing tools and composed analyses are both deterministic.
     """
 
     def __init__(
@@ -53,15 +37,30 @@ class AgentLoop:
         max_steps=10,
         insight_generator=None,
         session=None,
+        analysis_validator=None,
+        analysis_executor=None,
+        batch_size=None,
     ):
-        if max_steps <= 0:
-            raise ValueError("max_steps must be greater than zero.")
+      if max_steps <= 0:
+        raise ValueError("max_steps must be greater than zero.")
 
-        self.llm = llm
-        self.registry = registry
-        self.max_steps = max_steps
-        self.insight_generator = insight_generator
-        self.session = session
+      if batch_size is not None and batch_size <= 0:
+        raise ValueError("batch_size must be greater than zero.")
+
+      self.llm = llm
+      self.registry = registry
+      self.max_steps = max_steps
+      self.insight_generator = insight_generator
+      self.session = session
+      self.batch_size = batch_size
+ 
+      self.analysis_validator = (
+        analysis_validator or AnalysisRequestValidator()
+    )
+
+      self.analysis_executor = (
+        analysis_executor or AnalysisExecutor()
+    )
 
     def _is_duplicate_tool_call(
         self,
@@ -69,11 +68,6 @@ class AgentLoop:
         target_columns: list[str],
         observations: list[AgentObservation],
     ) -> bool:
-        """
-        Check whether the exact same tool request has already been executed.
-
-        Tool name and target columns must both match.
-        """
 
         requested_columns = tuple(target_columns)
 
@@ -96,10 +90,6 @@ class AgentLoop:
         target_columns: list[str],
         error: str,
     ) -> None:
-        """
-        Store a failed tool attempt both as an observation
-        and as an execution in Agent State.
-        """
 
         observation = AgentObservation(
             tool_name=tool_name,
@@ -111,9 +101,7 @@ class AgentLoop:
         observations.append(observation)
 
         if self.session is not None:
-            self.session.observations.append(
-                observation
-            )
+            self.session.observations.append(observation)
 
         execution = ToolExecution(
             tool_name=tool_name,
@@ -132,9 +120,6 @@ class AgentLoop:
         state: AgentState,
         observations: list[AgentObservation],
     ) -> bool:
-        """
-        Generate business insights from the observations collected so far.
-        """
 
         if self.insight_generator is None:
             return True
@@ -150,13 +135,100 @@ class AgentLoop:
             return True
 
         except Exception as exc:
-            state.executions.append(
+
+            add_tool_execution(
+                state,
                 ToolExecution(
                     tool_name="insight_generation",
                     target_columns=[],
                     success=False,
                     error=str(exc),
+                ),
+            )
+
+            return False
+
+    def _execute_composed_analysis(
+        self,
+        action,
+        dataframe: pd.DataFrame,
+        observations: list[AgentObservation],
+        state: AgentState,
+    ) -> bool:
+
+        if action.composed_analysis is None:
+
+            self._record_failed_execution(
+                state=state,
+                observations=observations,
+                tool_name="composed_analysis",
+                target_columns=[],
+                error="Missing composed analysis request.",
+            )
+
+            return False
+
+        try:
+            request = AnalysisRequest.model_validate(
+                action.composed_analysis.analysis_request
+            )
+
+            errors = self.analysis_validator.validate(
+                request=request,
+                dataframe=dataframe,
+            )
+
+            if errors:
+
+                self._record_failed_execution(
+                    state=state,
+                    observations=observations,
+                    tool_name="composed_analysis",
+                    target_columns=request.group_by,
+                    error="; ".join(errors),
                 )
+
+                return False
+
+            result = self.analysis_executor.execute(
+                request=request,
+                dataframe=dataframe,
+            )
+
+            observation = AgentObservation(
+                tool_name="composed_analysis",
+                target_columns=request.group_by,
+                success=True,
+                result=result,
+            )
+
+            execution = ToolExecution(
+                tool_name="composed_analysis",
+                target_columns=request.group_by,
+                success=True,
+                result=result,
+            )
+
+            observations.append(observation)
+
+            if self.session is not None:
+                self.session.observations.append(observation)
+
+            add_tool_execution(
+                state,
+                execution,
+            )
+
+            return True
+
+        except Exception as exc:
+
+            self._record_failed_execution(
+                state=state,
+                observations=observations,
+                tool_name="composed_analysis",
+                target_columns=[],
+                error=str(exc),
             )
 
             return False
@@ -169,8 +241,8 @@ class AgentLoop:
         """
         Run the autonomous agent.
 
-        The LLM decides what to analyze next.
-        Deterministic tools perform the actual calculations.
+        LLM decides what to investigate.
+        Python performs deterministic calculations.
         """
 
         observations: list[AgentObservation] = []
@@ -180,7 +252,26 @@ class AgentLoop:
             AgentStatus.PLANNING,
         )
 
-        for _ in range(self.max_steps):
+        for step in range(self.max_steps):
+
+             # ---------------------------------------------------------
+    # Batch pause
+    # ---------------------------------------------------------
+            if (
+                self.batch_size
+                and step > 0
+                and step % self.batch_size == 0
+            ):
+                print()
+                print("=" * 80)
+                print(
+                    f"PAUSED AFTER {step} INVESTIGATION STEPS"
+                )
+                print("=" * 80)
+
+                input(
+                    "Press ENTER to continue..."
+                )
 
             # ---------------------------------------------------------
             # 1. Ask LLM for next action
@@ -193,34 +284,13 @@ class AgentLoop:
                 )
 
             except Exception as exc:
-                error_message = f"LLM decision failed: {exc}"
 
-                observation = AgentObservation(
+                self._record_failed_execution(
+                    state=state,
+                    observations=observations,
                     tool_name="llm_decision",
                     target_columns=[],
-                    success=False,
-                    error=error_message,
-                )
-
-                execution = ToolExecution(
-                    tool_name="llm_decision",
-                    target_columns=[],
-                    success=False,
-                    error=error_message,
-                )
-
-                observations.append(
-                    observation
-                )
-
-                if self.session is not None:
-                    self.session.observations.append(
-                        observation
-                    )
-
-                add_tool_execution(
-                    state,
-                    execution,
+                    error=f"LLM decision failed: {exc}",
                 )
 
                 update_agent_status(
@@ -231,7 +301,7 @@ class AgentLoop:
                 return state
 
             # ---------------------------------------------------------
-            # Store hypothesis returned by the reasoning engine
+            # 2. Store hypothesis
             # ---------------------------------------------------------
 
             if action.hypothesis is not None:
@@ -240,7 +310,7 @@ class AgentLoop:
                 )
 
             # ---------------------------------------------------------
-            # 2. Finish
+            # 3. Finish
             # ---------------------------------------------------------
 
             if action.action_type == AgentActionType.FINISH:
@@ -264,10 +334,49 @@ class AgentLoop:
                 return state
 
             # ---------------------------------------------------------
-            # 3. Validate action type
+            # 4. Composed analysis
+            # ---------------------------------------------------------
+
+            if (
+                action.action_type
+                == AgentActionType.RUN_COMPOSED_ANALYSIS
+            ):
+
+                update_agent_status(
+                    state,
+                    AgentStatus.EXECUTING,
+                )
+
+                self._execute_composed_analysis(
+                    action=action,
+                    dataframe=dataframe,
+                    observations=observations,
+                    state=state,
+                )
+
+                update_agent_status(
+                    state,
+                    AgentStatus.ANALYZING,
+                )
+
+                continue
+
+            # ---------------------------------------------------------
+            # 5. Existing tool
             # ---------------------------------------------------------
 
             if action.action_type != AgentActionType.RUN_TOOL:
+
+                self._record_failed_execution(
+                    state=state,
+                    observations=observations,
+                    tool_name="agent_decision",
+                    target_columns=[],
+                    error=(
+                        f"Unsupported action type: "
+                        f"{action.action_type}"
+                    ),
+                )
 
                 update_agent_status(
                     state,
@@ -277,10 +386,18 @@ class AgentLoop:
                 return state
 
             # ---------------------------------------------------------
-            # 4. RUN_TOOL requires a tool call
+            # 6. RUN_TOOL requires tool_call
             # ---------------------------------------------------------
 
             if action.tool_call is None:
+
+                self._record_failed_execution(
+                    state=state,
+                    observations=observations,
+                    tool_name="agent_decision",
+                    target_columns=[],
+                    error="RUN_TOOL requires tool_call.",
+                )
 
                 update_agent_status(
                     state,
@@ -295,7 +412,7 @@ class AgentLoop:
             target_columns = tool_call.target_columns
 
             # ---------------------------------------------------------
-            # 5. Prevent exact duplicate tool calls
+            # 7. Prevent duplicate tool calls
             # ---------------------------------------------------------
 
             if self._is_duplicate_tool_call(
@@ -311,8 +428,8 @@ class AgentLoop:
                     target_columns=target_columns,
                     error=(
                         "Duplicate tool call detected. "
-                        "The same tool with the same target columns "
-                        "has already been executed."
+                        "The same tool with the same target "
+                        "columns has already been executed."
                     ),
                 )
 
@@ -324,7 +441,7 @@ class AgentLoop:
                 continue
 
             # ---------------------------------------------------------
-            # 6. Agent enters execution phase
+            # 8. Execution phase
             # ---------------------------------------------------------
 
             update_agent_status(
@@ -338,7 +455,7 @@ class AgentLoop:
             )
 
             # ---------------------------------------------------------
-            # 7. Validate tool request
+            # 9. Validate existing tool
             # ---------------------------------------------------------
 
             validation = validate_tool_request(
@@ -349,24 +466,19 @@ class AgentLoop:
             )
 
             # ---------------------------------------------------------
-            # 8. Handle validation failure
+            # 10. Handle validation failure
             # ---------------------------------------------------------
 
             if not validation.valid:
-
-                error_message = "; ".join(
-                    validation.errors
-                )
 
                 self._record_failed_execution(
                     state=state,
                     observations=observations,
                     tool_name=tool_name,
                     target_columns=target_columns,
-                    error=error_message,
+                    error="; ".join(validation.errors),
                 )
 
-                # Give the LLM another opportunity to recover.
                 update_agent_status(
                     state,
                     AgentStatus.ANALYZING,
@@ -375,7 +487,7 @@ class AgentLoop:
                 continue
 
             # ---------------------------------------------------------
-            # 9. Execute deterministic tool
+            # 11. Execute existing deterministic tool
             # ---------------------------------------------------------
 
             try:
@@ -400,35 +512,27 @@ class AgentLoop:
                     result=result,
                 )
 
-            # ---------------------------------------------------------
-            # 10. Handle execution failure
-            # ---------------------------------------------------------
-
             except Exception as exc:
-
-                error_message = str(exc)
 
                 observation = AgentObservation(
                     tool_name=tool_name,
                     target_columns=target_columns,
                     success=False,
-                    error=error_message,
+                    error=str(exc),
                 )
 
                 execution = ToolExecution(
                     tool_name=tool_name,
                     target_columns=target_columns,
                     success=False,
-                    error=error_message,
+                    error=str(exc),
                 )
 
             # ---------------------------------------------------------
-            # 11. Store observation
+            # 12. Store observation
             # ---------------------------------------------------------
 
-            observations.append(
-                observation
-            )
+            observations.append(observation)
 
             if self.session is not None:
                 self.session.observations.append(
@@ -436,7 +540,7 @@ class AgentLoop:
                 )
 
             # ---------------------------------------------------------
-            # 12. Store execution in Agent State
+            # 13. Store execution
             # ---------------------------------------------------------
 
             add_tool_execution(
@@ -445,7 +549,7 @@ class AgentLoop:
             )
 
             # ---------------------------------------------------------
-            # 13. Return control to LLM
+            # 14. Return control to LLM
             # ---------------------------------------------------------
 
             update_agent_status(
@@ -454,7 +558,7 @@ class AgentLoop:
             )
 
         # -------------------------------------------------------------
-        # 14. Maximum steps reached
+        # 15. Maximum steps reached
         # -------------------------------------------------------------
 
         update_agent_status(
@@ -462,23 +566,21 @@ class AgentLoop:
             AgentStatus.MAX_STEPS_REACHED,
         )
 
-        execution = ToolExecution(
-            tool_name="agent_loop",
-            target_columns=[],
-            success=False,
-            error=(
-                f"Maximum reasoning steps ({self.max_steps}) "
-                "reached before the agent returned FINISH."
+        add_tool_execution(
+            state,
+            ToolExecution(
+                tool_name="agent_loop",
+                target_columns=[],
+                success=False,
+                error=(
+                    f"Maximum reasoning steps ({self.max_steps}) "
+                    "reached before the agent returned FINISH."
+                ),
             ),
         )
 
-        add_tool_execution(
-            state,
-            execution,
-        )
-
         # -------------------------------------------------------------
-        # 15. Generate partial insights
+        # 16. Generate partial insights
         # -------------------------------------------------------------
 
         if not self._generate_insights(
@@ -489,7 +591,5 @@ class AgentLoop:
                 state,
                 AgentStatus.FAILED,
             )
-
-            return state
 
         return state

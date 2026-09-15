@@ -532,6 +532,11 @@ class AgentToolCall(BaseModel):
     target_columns: list[str] = Field(default_factory=list)
     reasoning: str
 
+class AgentComposedAnalysis(BaseModel):
+    analysis_request: dict[str, Any]
+    reasoning: str
+
+
 
 class AgentObservation(BaseModel):
     tool_name: str
@@ -544,11 +549,13 @@ class AgentObservation(BaseModel):
 
 class AgentActionType(str, Enum):
     RUN_TOOL = "run_tool"
+    RUN_COMPOSED_ANALYSIS = "run_composed_analysis"
     FINISH = "finish"
 
 
 class AgentAction(BaseModel):
     action_type: AgentActionType
     tool_call: AgentToolCall | None = None
+    composed_analysis: AgentComposedAnalysis | None = None
     reason: str
     hypothesis: InvestigationHypothesis | None = None

@@ -112,7 +112,8 @@ def main():
     loop = AgentLoop(
         llm=llm,
         registry=registry,
-        max_steps=5,
+        max_steps=10,
+        batch_size=5,
         insight_generator=insight_generator,
     )
 

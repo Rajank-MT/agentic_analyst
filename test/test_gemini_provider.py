@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.agent.providers.gemini import GeminiAgentLLM
@@ -49,10 +51,14 @@ def test_gemini_decide_returns_agent_action(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
     class FakeResponse:
-        parsed = AgentAction(
-            action_type=AgentActionType.FINISH,
-            reason="Enough evidence has been collected.",
-            tool_call=None,
+        text = json.dumps(
+            {
+                "action_type": "finish",
+                "reason": "Enough evidence has been collected.",
+                "tool_call": None,
+                "composed_analysis": None,
+                "hypothesis": None,
+            }
         )
 
     class FakeModels:
@@ -91,7 +97,7 @@ def test_gemini_decide_raises_when_response_is_not_parsed(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
     class FakeResponse:
-        parsed = None
+        text = '{"action_type": "invalid_action"}'
 
     class FakeModels:
         def generate_content(self, **kwargs):
@@ -117,7 +123,7 @@ def test_gemini_decide_raises_when_response_is_not_parsed(monkeypatch):
 
     with pytest.raises(
         RuntimeError,
-        match="Gemini returned no parsed AgentAction",
+        match="Gemini returned invalid AgentAction JSON",
     ):
         provider.decide(
             state=state,

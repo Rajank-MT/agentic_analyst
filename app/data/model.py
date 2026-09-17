@@ -518,6 +518,12 @@ class AgentState(BaseModel):
     hypotheses: list[InvestigationHypothesis] = Field(
         default_factory=list
     )
+
+    # Compact dataset-understanding context produced by adaptive sampling.
+    # This is context for the LLM only; deterministic tools still use the
+    # complete dataframe for evidence and calculations.
+    dataset_sample: dict[str, Any] | None = None
+
     insights: list[BusinessInsight] = Field(default_factory=list)
     status: AgentStatus = AgentStatus.INITIALIZED
 

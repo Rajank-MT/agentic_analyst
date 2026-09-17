@@ -9,15 +9,26 @@ from app.data.model import (
 from app.agent.investigation import build_investigation_summary
 
 
+# Number of recent investigations whose complete results
+# are sent to the LLM.
+RECENT_DETAILED_OBSERVATIONS = 2
+
+
 def build_agent_context(
     state: AgentState,
     observations: list[AgentObservation],
 ) -> dict[str, Any]:
     """
-    Build structured context for the reasoning engine.
+    Build compact structured context for the reasoning engine.
 
-    The context helps the LLM reason about the dataset as a whole
-    instead of repeatedly following the most recent investigation.
+    The LLM receives:
+    - Full dataset/metric understanding
+    - Investigation coverage
+    - Lightweight history of all investigations
+    - Detailed results only for recent investigations
+
+    This prevents the prompt from growing continuously as
+    the autonomous investigation progresses.
     """
 
     metrics = [
@@ -35,16 +46,28 @@ def build_agent_context(
         observations,
     )
 
+    # Keep only the most recent detailed results.
+    recent_observations = observations[
+        -RECENT_DETAILED_OBSERVATIONS:
+    ]
+
     return {
         "user_goal": state.user_goal,
+
         "datasets": state.dataset_names,
 
+        # ---------------------------------------------------------
+        # Dataset understanding
+        # ---------------------------------------------------------
         "metrics": metrics,
+
+        # Compact adaptive sample for understanding unfamiliar datasets.
+        # The full dataframe is never serialized into LLM context.
+        "dataset_sample": state.dataset_sample,
 
         "available_tools": [
             {
                 "name": tool.name,
-                "description": tool.description,
                 "analysis_type": tool.analysis_type.value,
                 "required_roles": [
                     role.value
@@ -54,12 +77,18 @@ def build_agent_context(
             for tool in state.available_tools
         ],
 
+        # ---------------------------------------------------------
+        # Investigation understanding
+        # ---------------------------------------------------------
         "investigation_summary": build_investigation_summary(
             observations
         ),
 
         "investigation_coverage": investigation_coverage,
 
+        # ---------------------------------------------------------
+        # Lightweight history of ALL investigations
+        # ---------------------------------------------------------
         "investigation_history": [
             {
                 "execution_index": index,
@@ -75,9 +104,16 @@ def build_agent_context(
             for index, observation in enumerate(observations)
         ],
 
+        # ---------------------------------------------------------
+        # Detailed results ONLY for recent investigations
+        # ---------------------------------------------------------
         "observation_results": [
             {
-                "execution_index": index,
+                "execution_index": (
+                    len(observations)
+                    - len(recent_observations)
+                    + index
+                ),
                 "tool_name": observation.tool_name,
                 "target_columns": observation.target_columns,
                 "success": observation.success,
@@ -86,32 +122,45 @@ def build_agent_context(
                     if observation.success
                     else "failed"
                 ),
-                "result": _serialize_result(
-                    observation.result
+                "result": (
+                    _serialize_result(
+                        observation.result
+                    )
+                    if observation.success
+                    else None
                 ),
                 "error": observation.error,
             }
-            for index, observation in enumerate(observations)
+            for index, observation in enumerate(
+                recent_observations
+            )
         ],
 
+        # ---------------------------------------------------------
         # Backward compatibility
+        #
+        # IMPORTANT:
+        # Do NOT duplicate the complete results here.
+        # ---------------------------------------------------------
         "previous_observations": [
-            {
-                "tool_name": observation.tool_name,
-                "target_columns": observation.target_columns,
-                "success": observation.success,
-                "status": (
-                    "success"
-                    if observation.success
-                    else "failed"
-                ),
-                "result": _serialize_result(
-                    observation.result
-                ),
-                "error": observation.error,
-            }
-            for observation in observations
-        ],
+    {
+        "tool_name": observation.tool_name,
+        "target_columns": observation.target_columns,
+        "success": observation.success,
+        "status": (
+            "success"
+            if observation.success
+            else "failed"
+        ),
+        "result": (
+            _serialize_result(observation.result)
+            if observation.success
+            else None
+        ),
+        "error": observation.error,
+    }
+    for observation in observations
+],
     }
 
 
@@ -230,7 +279,9 @@ def _serialize_result(result: Any) -> Any:
         return None
 
     if hasattr(result, "model_dump"):
-        return result.model_dump()
+        return _serialize_result(
+            result.model_dump()
+        )
 
     if isinstance(result, dict):
         return {
@@ -252,6 +303,11 @@ def _serialize_result(result: Any) -> Any:
 
     return result
 
+
+# -----------------------------------------------------------------
+# These helper functions are retained for compatibility with
+# existing code elsewhere in the project.
+# -----------------------------------------------------------------
 
 def _build_investigation_history(
     observations,

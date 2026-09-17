@@ -3,12 +3,14 @@ from pathlib import Path
 import pandas as pd
 
 from app.agent.loop import AgentLoop
-from app.agent.providers.gemini import GeminiAgentLLM
-from app.agent.providers.gemini_insight import GeminiInsightGenerator
+#from app.agent.providers.gemini import GeminiAgentLLM
+#from app.agent.providers.gemini_insight import GeminiInsightGenerator
 from app.agent.state import create_agent_state
-
+from app.agent.providers.groq import GroqAgentLLM
+from app.agent.providers.groq_insight import GroqInsightGenerator
 from app.data.profiling import profile_dataset
 from app.data.metrics import discover_metric_role
+from app.data.sampling import build_adaptive_sample
 from app.data.tool_registry import build_analysis_tool_registry
 
 
@@ -58,6 +60,24 @@ def main():
         for column in dataset_profile.columns
     ]
 
+    # ---------------------------------------------------------------
+    # 3b. Build adaptive dataset-understanding sample
+    # ---------------------------------------------------------------
+    print("\n[3b] Building adaptive dataset sample...")
+
+    dataset_sample = build_adaptive_sample(
+        dataframe=dataframe,
+        random_sample_size=8,
+        representative_row_count=8,
+        categorical_example_count=8,
+        rare_value_example_count=5,
+    )
+
+    print(
+        f"Sampled {dataset_sample.sampling_metadata.sample_size} "
+        "context rows plus compact value examples"
+    )
+
     for metric in metric_profiles:
         print(
             f"  {metric.column_name:<25} "
@@ -94,12 +114,16 @@ def main():
         available_tools=registry.tools,
     )
 
+    # Store only the compact understanding sample in agent state.
+    # Deterministic investigations continue to use the full dataframe.
+    state.dataset_sample = dataset_sample.model_dump()
+
     # ---------------------------------------------------------------
     # 6. Initialize Gemini
     # ---------------------------------------------------------------
     print("\n[5] Initializing Gemini...")
 
-    llm = GeminiAgentLLM()
+    llm = GroqAgentLLM()
 
     # ---------------------------------------------------------------
     # 7. Start autonomous agent
@@ -107,7 +131,7 @@ def main():
     print("\n[6] Starting autonomous investigation...")
     print("-" * 80)
 
-    insight_generator = GeminiInsightGenerator()
+    insight_generator = GroqInsightGenerator()
 
     loop = AgentLoop(
         llm=llm,

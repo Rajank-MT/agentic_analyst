@@ -27,7 +27,7 @@ def test_gemini_provider_initializes_with_api_key(monkeypatch):
 
     provider = GeminiAgentLLM()
 
-    assert provider.model == "gemini-2.5-flash"
+    assert provider.model == "gemini-3.6-flash"
     assert isinstance(provider.client, FakeClient)
 
 

@@ -54,21 +54,35 @@ class GroqInsightGenerator(InsightGenerator):
             observations=observations,
         )
 
+        
         context = {
-            "user_goal": full_context.get(
-                "user_goal"
-            ),
-            "datasets": full_context.get(
-                "datasets"
-            ),
+            "user_goal": full_context.get("user_goal"),
+            "datasets": full_context.get("datasets", []),
             "investigation_summary": full_context.get(
                 "investigation_summary"
             ),
-            "observation_results": full_context.get(
-                "observation_results",
-                [],
-            ),
+            "observation_results": [
+                {
+                    "execution_index": index,
+                    "tool_name": observation.tool_name,
+                    "target_columns": observation.target_columns,
+                    "success": observation.success,
+                    "status": (
+                        "success"
+                        if observation.success
+                        else "failed"
+                    ),
+                    "result": (
+                        observation.result.model_dump()
+                        if hasattr(observation.result, "model_dump")
+                        else observation.result
+                    ) if observation.success else None,
+                    "error": observation.error,
+                }
+                for index, observation in enumerate(observations)
+            ],
         }
+
 
         context_json = json.dumps(
             context,

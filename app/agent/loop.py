@@ -257,21 +257,7 @@ class AgentLoop:
              # ---------------------------------------------------------
     # Batch pause
     # ---------------------------------------------------------
-            if (
-                self.batch_size
-                and step > 0
-                and step % self.batch_size == 0
-            ):
-                print()
-                print("=" * 80)
-                print(
-                    f"PAUSED AFTER {step} INVESTIGATION STEPS"
-                )
-                print("=" * 80)
-
-                input(
-                    "Press ENTER to continue..."
-                )
+        
 
             # ---------------------------------------------------------
             # 1. Ask LLM for next action
@@ -561,26 +547,21 @@ class AgentLoop:
         # 15. Maximum steps reached
         # -------------------------------------------------------------
 
+         
+        # -------------------------------------------------------------
+        # 15. Maximum steps reached
+        # -------------------------------------------------------------
+        # The agent reached its reasoning budget without returning
+        # FINISH. Preserve existing results and generate partial insights.
+        # This is a limit notification, not necessarily an execution failure.
+
         update_agent_status(
             state,
             AgentStatus.MAX_STEPS_REACHED,
         )
 
-        add_tool_execution(
-            state,
-            ToolExecution(
-                tool_name="agent_loop",
-                target_columns=[],
-                success=False,
-                error=(
-                    f"Maximum reasoning steps ({self.max_steps}) "
-                    "reached before the agent returned FINISH."
-                ),
-            ),
-        )
-
         # -------------------------------------------------------------
-        # 16. Generate partial insights
+        # 16. Generate insights from collected results
         # -------------------------------------------------------------
 
         if not self._generate_insights(

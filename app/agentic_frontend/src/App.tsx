@@ -20,9 +20,19 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
+
+import {
+  analyzeDataset,
+  testPostgresConnection,
+  getPostgresTables,
+  previewPostgresTable,
+  analyzePostgresTable,
+  type AnalysisResponse,
+  type PostgresPreviewResponse,
+} from "./api";
 import "./index.css";
 
-const API_URL = "http://127.0.0.1:8000";
+
 
 type MetricProfile = {
   column_name: string;
@@ -46,17 +56,6 @@ type DatasetInfo = {
   columns: number;
 };
 
-type AnalysisResponse = {
-  status: string;
-  dataset: DatasetInfo;
-  tools_available: number;
-  coverage: number;
-  investigated_columns: string[];
-  metric_profiles: MetricProfile[];
-  investigations: Investigation[];
-  insights: unknown[];
-  hypotheses: unknown[];
-};
 
 type Tab =
   | "overview"
@@ -150,6 +149,16 @@ function App() {
     number | null
   >(null);
 
+  const [source, setSource] = useState<"csv" | "postgres">("csv");
+  const [dbStatus, setDbStatus] = useState("");
+  const [dbLoading, setDbLoading] = useState(false);
+  const [schemaName, setSchemaName] = useState("public");
+  const [tables, setTables] = useState<string[]>([]);
+  const [selectedTable, setSelectedTable] = useState("");
+  const [preview, setPreview] = useState<PostgresPreviewResponse | null>(null);
+
+
+
   const successfulInvestigations = useMemo(
     () =>
       data?.investigations.filter((item) => item.success).length ?? 0,
@@ -160,6 +169,8 @@ function App() {
     () =>
       data?.investigations.filter((item) => !item.success).length ?? 0,
     [data]
+
+    
   );
 
   function handleFile(selectedFile: File | null) {
@@ -188,56 +199,109 @@ function App() {
     }
   }
 
-  async function runAnalysis() {
-    if (!file) {
-      setError("Please select a CSV dataset first.");
+   async function runAnalysis() {
+  if (!file) {
+    setError("Please select a CSV dataset first.");
+    return;
+  }
+
+  setLoading(true);
+  setError("");
+  setData(null);
+
+  try {
+    const responseData = await analyzeDataset(file);
+
+    setData(responseData);
+    setActiveTab("overview");
+  } catch (err) {
+    if (err instanceof TypeError && err.message.includes("fetch")) {
+      setError(
+        "Cannot connect to FastAPI. Make sure the backend is running on port 8000."
+      );
+    } else {
+      setError(
+        err instanceof Error ? err.message : "Something went wrong."
+      );
+    }
+  } finally {
+    setLoading(false);
+  }
+}
+
+  async function handleTestConnection() {
+    setDbLoading(true);
+    setDbStatus("");
+    setError("");
+    try {
+      const result = await testPostgresConnection();
+      setDbStatus(result.message);
+    } catch (err) {
+      setDbStatus(err instanceof Error ? err.message : "PostgreSQL connection failed.");
+    } finally {
+      setDbLoading(false);
+    }
+  }
+
+  async function handleLoadTables() {
+    setDbLoading(true);
+    setDbStatus("");
+    setError("");
+    try {
+      const result = await getPostgresTables(schemaName.trim() || "public");
+      setTables(result.tables);
+      setSelectedTable(result.tables.includes(selectedTable) ? selectedTable : (result.tables[0] ?? ""));
+      setPreview(null);
+      setDbStatus(`Loaded ${result.count} table(s) from schema ${result.schema}.`);
+    } catch (err) {
+      setTables([]);
+      setSelectedTable("");
+      setPreview(null);
+      setDbStatus(err instanceof Error ? err.message : "Could not load PostgreSQL tables.");
+    } finally {
+      setDbLoading(false);
+    }
+  }
+
+  async function handlePreviewTable() {
+    if (!selectedTable) {
+      setDbStatus("Select a table first.");
       return;
     }
+    setDbLoading(true);
+    setDbStatus("");
+    setError("");
+    try {
+      const result = await previewPostgresTable(selectedTable, schemaName.trim() || "public", 100);
+      setPreview(result);
+      setDbStatus(`Preview loaded: ${result.rows_returned} row(s).`);
+    } catch (err) {
+      setPreview(null);
+      setDbStatus(err instanceof Error ? err.message : "Could not preview this table.");
+    } finally {
+      setDbLoading(false);
+    }
+  }
 
+  async function handleAnalyzePostgres() {
+    if (!selectedTable) {
+      setError("Load tables and select a PostgreSQL table first.");
+      return;
+    }
     setLoading(true);
     setError("");
     setData(null);
-
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const response = await fetch(`${API_URL}/api/analyze`, {
-        method: "POST",
-        body: formData,
+      const responseData = await analyzePostgresTable({
+        schema_name: schemaName.trim() || "public",
+        table_name: selectedTable,
+        row_limit: 50000,
       });
-
-      const responseText = await response.text();
-
-      let responseData: any;
-
-      try {
-        responseData = JSON.parse(responseText);
-      } catch {
-        throw new Error(
-          `Backend returned an invalid response (${response.status}).`
-        );
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          responseData?.detail ||
-            `Analysis failed with status ${response.status}.`
-        );
-      }
-
-      setData(responseData as AnalysisResponse);
+      setData(responseData);
+      setFile(null);
       setActiveTab("overview");
     } catch (err) {
-      if (err instanceof TypeError && err.message.includes("fetch")) {
-        setError(
-          "Cannot connect to the FastAPI backend. Make sure it is running on http://127.0.0.1:8000."
-        );
-      } else {
-        setError(
-          err instanceof Error ? err.message : "Something went wrong."
-        );
-      }
+      setError(err instanceof Error ? err.message : "PostgreSQL analysis failed.");
     } finally {
       setLoading(false);
     }
@@ -284,6 +348,33 @@ function App() {
             onDragEnter={() => setDragging(true)}
             onDragLeave={() => setDragging(false)}
             onAnalyze={runAnalysis}
+            source={source}
+            onSourceChange={(nextSource) => {
+              setSource(nextSource);
+              setError("");
+              setDbStatus("");
+            }}
+            schemaName={schemaName}
+            onSchemaChange={(value) => {
+              setSchemaName(value);
+              setTables([]);
+              setSelectedTable("");
+              setPreview(null);
+              setDbStatus("");
+            }}
+            tables={tables}
+            selectedTable={selectedTable}
+            onTableChange={(value) => {
+              setSelectedTable(value);
+              setPreview(null);
+            }}
+            preview={preview}
+            dbStatus={dbStatus}
+            dbLoading={dbLoading}
+            onTestConnection={handleTestConnection}
+            onLoadTables={handleLoadTables}
+            onPreviewTable={handlePreviewTable}
+            onAnalyzePostgres={handleAnalyzePostgres}
           />
         ) : (
           <Dashboard
@@ -313,6 +404,20 @@ function UploadScreen({
   onDragEnter,
   onDragLeave,
   onAnalyze,
+  source,
+  onSourceChange,
+  schemaName,
+  onSchemaChange,
+  tables,
+  selectedTable,
+  onTableChange,
+  preview,
+  dbStatus,
+  dbLoading,
+  onTestConnection,
+  onLoadTables,
+  onPreviewTable,
+  onAnalyzePostgres,
 }: {
   file: File | null;
   loading: boolean;
@@ -323,6 +428,20 @@ function UploadScreen({
   onDragEnter: () => void;
   onDragLeave: () => void;
   onAnalyze: () => void;
+  source: "csv" | "postgres";
+  onSourceChange: (source: "csv" | "postgres") => void;
+  schemaName: string;
+  onSchemaChange: (value: string) => void;
+  tables: string[];
+  selectedTable: string;
+  onTableChange: (value: string) => void;
+  preview: PostgresPreviewResponse | null;
+  dbStatus: string;
+  dbLoading: boolean;
+  onTestConnection: () => void;
+  onLoadTables: () => void;
+  onPreviewTable: () => void;
+  onAnalyzePostgres: () => void;
 }) {
   return (
     <section className="upload-page">
@@ -345,6 +464,27 @@ function UploadScreen({
         </p>
       </div>
 
+      <div style={{ display: "flex", gap: 12, margin: "0 auto 24px", width: "100%", maxWidth: 760 }}>
+        <button
+          type="button"
+          onClick={() => onSourceChange("csv")}
+          aria-pressed={source === "csv"}
+          style={{ flex: 1, padding: "14px 18px", borderRadius: 12, border: source === "csv" ? "1px solid #8b5cf6" : "1px solid rgba(139,92,246,.25)", background: source === "csv" ? "rgba(139,92,246,.14)" : "transparent", color: "inherit", cursor: "pointer", font: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}
+        >
+          <FileSpreadsheet size={18} /> CSV Upload
+        </button>
+        <button
+          type="button"
+          onClick={() => onSourceChange("postgres")}
+          aria-pressed={source === "postgres"}
+          style={{ flex: 1, padding: "14px 18px", borderRadius: 12, border: source === "postgres" ? "1px solid #8b5cf6" : "1px solid rgba(139,92,246,.25)", background: source === "postgres" ? "rgba(139,92,246,.14)" : "transparent", color: "inherit", cursor: "pointer", font: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}
+        >
+          <Database size={18} /> PostgreSQL
+        </button>
+      </div>
+
+      {source === "csv" ? (
+      <>
       <div
         className={`upload-card ${dragging ? "dragging" : ""}`}
         onDragOver={(event) => event.preventDefault()}
@@ -455,6 +595,69 @@ function UploadScreen({
           text="Support insights with statistics"
         />
       </div>
+      </>
+      ) : (
+        <div className="panel-card" style={{ width: "100%", maxWidth: 760, margin: "0 auto", boxSizing: "border-box" }}>
+          <div className="card-heading">
+            <div>
+              <span className="card-eyebrow">DATABASE CONNECTION</span>
+              <h3>Analyze a PostgreSQL table</h3>
+            </div>
+            <Database size={20} />
+          </div>
+          <p style={{ marginTop: 0, color: "var(--text-secondary, #a1a1aa)" }}>
+            Connect to the configured database, choose a schema and table, then run the same autonomous analysis.
+          </p>
+          <label style={{ display: "block", margin: "20px 0 8px", fontWeight: 600 }}>Schema</label>
+          <input
+            value={schemaName}
+            onChange={(event) => onSchemaChange(event.target.value)}
+            placeholder="public"
+            aria-label="PostgreSQL schema"
+            style={{ boxSizing: "border-box", width: "100%", padding: 12, border: "1px solid rgba(139,92,246,.3)", borderRadius: 8, background: "rgba(0,0,0,.15)", color: "inherit", font: "inherit" }}
+          />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 16 }}>
+            <button type="button" className="secondary-button" onClick={onTestConnection} disabled={dbLoading}>
+              {dbLoading ? "Please wait…" : "Test Connection"}
+            </button>
+            <button type="button" className="secondary-button" onClick={onLoadTables} disabled={dbLoading}>
+              {dbLoading ? "Please wait…" : "Load Tables"}
+            </button>
+          </div>
+          {tables.length > 0 && (
+            <>
+              <label style={{ display: "block", margin: "20px 0 8px", fontWeight: 600 }}>Table</label>
+              <select
+                value={selectedTable}
+                onChange={(event) => onTableChange(event.target.value)}
+                aria-label="PostgreSQL table"
+                style={{ boxSizing: "border-box", width: "100%", padding: 12, border: "1px solid rgba(139,92,246,.3)", borderRadius: 8, background: "#151522", color: "inherit", font: "inherit" }}
+              >
+                {tables.map((table) => <option key={table} value={table}>{table}</option>)}
+              </select>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 16 }}>
+                <button type="button" className="secondary-button" onClick={onPreviewTable} disabled={dbLoading || !selectedTable}>
+                  Preview Table
+                </button>
+                <button type="button" className="analyze-button" onClick={onAnalyzePostgres} disabled={loading || dbLoading || !selectedTable}>
+                  {loading ? <><Loader2 className="spin" size={18} /> Analyzing Table…</> : <><Play size={18} fill="currentColor" /> Start Autonomous Analysis</>}
+                </button>
+              </div>
+            </>
+          )}
+          {dbStatus && <div className="connection-message" role="status" style={{ marginTop: 16, overflowWrap: "anywhere" }}>{dbStatus}</div>}
+          {preview && (
+            <div style={{ marginTop: 24, maxWidth: "100%", overflowX: "auto" }}>
+              <div className="card-eyebrow" style={{ marginBottom: 10 }}>TABLE PREVIEW · {preview.rows_returned} ROWS</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
+                <thead><tr>{preview.columns.map((column) => <th key={column} style={{ padding: 10, borderBottom: "1px solid rgba(139,92,246,.25)", whiteSpace: "nowrap" }}>{column}</th>)}</tr></thead>
+                <tbody>{preview.rows.map((row, index) => <tr key={index}>{preview.columns.map((column) => <td key={column} style={{ padding: 10, borderBottom: "1px solid rgba(139,92,246,.15)", whiteSpace: "nowrap" }}>{row[column] === null || row[column] === undefined ? "—" : String(row[column])}</td>)}</tr>)}</tbody>
+              </table>
+            </div>
+          )}
+          {error && <div className="error-banner" style={{ marginTop: 16 }}><XCircle size={19} /><span>{error}</span></div>}
+        </div>
+      )}
     </section>
   );
 }

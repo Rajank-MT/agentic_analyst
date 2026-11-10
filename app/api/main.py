@@ -2,6 +2,7 @@ from enum import Enum
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
+from app.api.postgres import router as postgres_router
 
 import numpy as np
 import pandas as pd
@@ -12,13 +13,19 @@ from pydantic import BaseModel
 from app.agent.loop import AgentLoop
 #from app.agent.providers.gemini import GeminiAgentLLM
 #from app.agent.providers.gemini_insight import GeminiInsightGenerator
-from app.agent.providers.groq import GroqAgentLLM
-from app.agent.providers.groq_insight import GroqInsightGenerator
+#from app.agent.providers.groq import GroqAgentLLM
+#from app.agent.providers.groq_insight import GroqInsightGenerator
+from app.agent.providers.azure_openai import AzureOpenAIAgentLLM
+from app.agent.providers.azure_openai_insight import (
+    AzureOpenAIInsightGenerator,
+)
+
 from app.agent.state import create_agent_state
 from app.data.metrics import discover_metric_role
 from app.data.profiling import profile_dataset
 from app.data.sampling import build_adaptive_sample
 from app.data.tool_registry import build_analysis_tool_registry
+from app.api.postgres import router as postgres_router
 
 
 # =============================================================================
@@ -29,7 +36,7 @@ app = FastAPI(
     title="Agentic Data Analyst API",
     version="1.0.0",
 )
-
+app.include_router(postgres_router)
 
 # =============================================================================
 # CORS
@@ -489,14 +496,14 @@ async def analyze(
         # Initialize Gemini
         # ---------------------------------------------------------------------
 
-        llm = GroqAgentLLM()
+        llm = AzureOpenAIAgentLLM()
 
         # ---------------------------------------------------------------------
         # Initialize insight generator
         # ---------------------------------------------------------------------
 
         insight_generator = (
-            GroqInsightGenerator()
+             AzureOpenAIInsightGenerator()
         )
 
         # ---------------------------------------------------------------------

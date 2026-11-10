@@ -22,7 +22,7 @@ class GeminiAgentLLM(AgentLLM):
 
     def __init__(
         self,
-        model: str = "gemini-3.6-flash",
+        model: str = "gemini-3.8-flash",
     ):
         api_key = os.getenv("GEMINI_API_KEY")
 

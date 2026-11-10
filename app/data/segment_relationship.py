@@ -12,11 +12,19 @@ def calculate_segment_relationship(
     measure_column: str,
     measure_series: pd.Series,
 ) -> SegmentRelationshipProfile:
+    """
+    Compare a numeric measure across categorical segments.
 
-    dataframe = pd.DataFrame({
-        "category": categorical_series,
-        "value": pd.to_numeric(measure_series, errors="coerce"),
-    }).dropna()
+    Rows with a missing category or a non-numeric/missing measure are excluded.
+    The two Series are aligned by their pandas indexes when constructing the
+    temporary DataFrame.
+    """
+    dataframe = pd.DataFrame(
+        {
+            "category": categorical_series,
+            "value": pd.to_numeric(measure_series, errors="coerce"),
+        }
+    ).dropna(subset=["category", "value"])
 
     if dataframe.empty:
         return SegmentRelationshipProfile(
@@ -28,14 +36,18 @@ def calculate_segment_relationship(
     overall_mean = float(dataframe["value"].mean())
     overall_median = float(dataframe["value"].median())
 
-    grouped = dataframe.groupby("category")["value"]
+    # observed=True avoids generating empty groups for unused categorical
+    # levels when the input category has pandas Categorical dtype.
+    grouped = dataframe.groupby(
+        "category",
+        observed=True,
+    )["value"]
 
     segments = []
 
     for category, values in grouped:
         mean = float(values.mean())
         median = float(values.median())
-
         difference = mean - overall_mean
 
         if overall_mean != 0:
@@ -60,9 +72,12 @@ def calculate_segment_relationship(
             )
         )
 
+    # Highest mean first; lowest mean last.
     segments.sort(
         key=lambda segment: (
-            segment.mean if segment.mean is not None else float("-inf")
+            segment.mean
+            if segment.mean is not None
+            else float("-inf")
         ),
         reverse=True,
     )

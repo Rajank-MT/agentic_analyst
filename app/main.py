@@ -3,7 +3,7 @@ from pathlib import Path
 from app.config.settings import get_settings
 from app.data.ingestion import load_dataset
 from app.data.profiling import profile_dataset
-
+from app.api.postgres import router as postgres_router
 
 def main() -> None:
     """Run a basic end-to-end data ingestion and profiling test."""

@@ -30,3 +30,6 @@ Thumbs.db
 # Local datasets
 datasets/*
 !datasets/.gitkeep
+
+node_modules/
+**/node_modules/
